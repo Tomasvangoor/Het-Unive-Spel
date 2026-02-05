@@ -1,0 +1,170 @@
+<!doctype html>
+<html lang="nl">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Breakout — Win screen with Tomas</title>
+<style>
+  html,body{margin:0;height:100%;background:#071224;color:#fff;font-family:Arial}
+  #wrap{width:900px;max-width:95%;margin:16px auto;background:#021322;padding:12px;border-radius:10px;box-shadow:0 10px 40px rgba(0,0,0,0.6)}
+  canvas{display:block;background:#021026;border-radius:6px}
+  .overlay{position:fixed;left:0;top:0;width:100%;height:100%;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,0.75);z-index:9999;visibility:hidden;opacity:0;transition:opacity .25s}
+  .overlay.show{visibility:visible;opacity:1}
+  /* smaller card + image constraints so the champion image always fits in viewport */
+  .card{background:#fff;border-radius:12px;padding:18px;max-width:740px;width:90%;color:#111;box-shadow:0 10px 40px rgba(0,0,0,0.5);text-align:center}
+  .card img{max-width:100%;height:auto;border-radius:8px;max-height:60vh;object-fit:contain;display:block;margin:0 auto}
+  .card h1{margin:12px 0 6px;font-size:28px}
+  .card p{margin:0 0 12px}
+  .card button{background:#1e88e5;color:#fff;border:none;padding:10px 14px;border-radius:8px;cursor:pointer;font-size:16px}
+  .hud{display:flex;justify-content:space-between;gap:12px;margin-bottom:8px;font-size:14px;align-items:center}
+  @media (max-width:520px){
+    .card{max-width:92%}
+    .card h1{font-size:20px}
+  }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <div class="hud">
+    <div>Score: <strong id="score">0</strong></div>
+    <div>
+      <button id="startBtn">Start</button>
+      <button id="pauseBtn">Pause</button>
+      <button id="resetBtn">Reset</button>
+    </div>
+    <div>Levens: <strong id="lives">3</strong></div>
+  </div>
+  <canvas id="game" width="900" height="600"></canvas>
+  <p style="font-size:12px;opacity:.8">Gebruik pijltjestoetsen of muis – bij winst verschijnt een ludieke foto van Tomas.</p>
+</div>
+
+<!-- Overlay displayed on win -->
+<div id="winOverlay" class="overlay" role="dialog" aria-hidden="true">
+  <div class="card" role="document">
+    <img id="winImg" src="tomas_champion.png" alt="Gefeliciteerd!">
+    <h1>Gefeliciteerd!</h1>
+    <p>Je bent nu net zo'n <strong>CHAMPION</strong> als Tomas!</p>
+    <div style="margin-top:12px;">
+      <button id="playAgain">Speel opnieuw</button>
+    </div>
+  </div>
+</div>
+
+<script>
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+const W = canvas.width, H = canvas.height;
+
+let score = 0, lives = 3;
+let running = false, paused = false;
+
+// images (files must be in dezelfde map)
+const ballImg = new Image(); ballImg.src = 'ball_koen.png';
+const brickImgs = ['brick_1.png','brick_2.png','brick_3.png','brick_4.png'].map(function(s){ const i=new Image(); i.src=s; return i; });
+
+// layout
+const ROWS=4, COLS=8, PAD=8, OFFX=40, OFFY=60;
+const BW = Math.floor((W - OFFX*2 - PAD*(COLS-1)) / COLS);
+const BH = 60;
+let bricks = [];
+function initBricks(){
+  bricks = [];
+  for(let r=0;r<ROWS;r++){ bricks[r]=[];
+    for(let c=0;c<COLS;c++){
+      bricks[r][c] = { x: OFFX + c*(BW+PAD), y: OFFY + r*(BH+PAD), alive:true, img: brickImgs[(r*COLS+c)%brickImgs.length] };
+    }
+  }
+}
+
+// paddle & ball
+const paddle = {w:120,h:14,x:(W-120)/2,y:H-50,s:9};
+let ball = {x:W/2,y:H-120,r:16,dx:4,dy:-4};
+
+// input
+let left=false, right=false;
+document.addEventListener('keydown', function(e){ if(e.key==='ArrowLeft') left=true; if(e.key==='ArrowRight') right=true; if(e.code==='Space') startGame(); });
+document.addEventListener('keyup', function(e){ if(e.key==='ArrowLeft') left=false; if(e.key==='ArrowRight') right=false; });
+canvas.addEventListener('mousemove', function(e){ const r=canvas.getBoundingClientRect(); paddle.x = e.clientX - r.left - paddle.w/2; clampPaddle(); });
+
+function clampPaddle(){ paddle.x = Math.max(0, Math.min(W - paddle.w, paddle.x)); }
+
+function drawCircleImage(img, cx, cy, r){
+  if(!img.complete) return;
+  ctx.save();
+  ctx.beginPath();
+  ctx.arc(cx, cy, r, 0, Math.PI*2);
+  ctx.clip();
+  const s = Math.max((r*2)/img.width, (r*2)/img.height);
+  const dw = img.width * s, dh = img.height * s;
+  ctx.drawImage(img, cx - dw/2, cy - dh/2, dw, dh);
+  ctx.restore();
+}
+
+function draw(){
+  ctx.clearRect(0,0,W,H);
+  ctx.fillStyle = '#021322';
+  ctx.fillRect(0,0,W,H);
+
+  for(let r=0;r<ROWS;r++){ for(let c=0;c<COLS;c++){
+    const b = bricks[r][c]; if(!b.alive) continue;
+    const cx = b.x + BW/2, cy = b.y + BH/2, radius = Math.min(BW,BH)/2 - 6;
+    ctx.beginPath(); ctx.fillStyle='#fff'; ctx.arc(cx,cy,radius+3,0,Math.PI*2); ctx.fill();
+    drawCircleImage(b.img, cx, cy, radius);
+  }}
+
+  ctx.fillStyle = '#66ccff'; roundRect(ctx, paddle.x, paddle.y, paddle.w, paddle.h, 6); ctx.fill();
+  drawCircleImage(ballImg, ball.x, ball.y, ball.r);
+  ctx.fillStyle='white'; ctx.font='16px sans-serif'; ctx.fillText('Score: '+score, 16, 28); ctx.fillText('Lives: '+lives, W-100, 28);
+}
+
+function roundRect(ctx,x,y,w,h,r){ ctx.beginPath(); ctx.moveTo(x+r,y); ctx.arcTo(x+w,y,x+w,y+h,r); ctx.arcTo(x+w,y+h,x,y+h,r); ctx.arcTo(x,y+h,x,y,r); ctx.arcTo(x,y,x+w,y,r); ctx.closePath(); }
+
+function updatePhysics(){
+  if(left) paddle.x -= paddle.s; if(right) paddle.x += paddle.s; clampPaddle();
+  ball.x += ball.dx; ball.y += ball.dy;
+  if(ball.x < ball.r) { ball.x = ball.r; ball.dx *= -1; }
+  if(ball.x > W - ball.r) { ball.x = W - ball.r; ball.dx *= -1; }
+  if(ball.y < ball.r) { ball.y = ball.r; ball.dy *= -1; }
+
+  if(ball.y + ball.r >= paddle.y && ball.y + ball.r <= paddle.y + paddle.h){
+    if(ball.x >= paddle.x && ball.x <= paddle.x + paddle.w){
+      const hitPos = (ball.x - (paddle.x + paddle.w/2)) / (paddle.w/2);
+      const maxA = Math.PI/3; const angle = hitPos * maxA; const speed = Math.sqrt(ball.dx*ball.dx + ball.dy*ball.dy);
+      ball.dx = speed * Math.sin(angle); ball.dy = -Math.abs(speed * Math.cos(angle)); ball.y = paddle.y - ball.r - 1;
+    }
+  }
+
+  let remaining = 0;
+  for(let r=0;r<ROWS;r++){ for(let c=0;c<COLS;c++){ const b = bricks[r][c]; if(!b.alive) continue; const rx=b.x, ry=b.y, rw=BW, rh=BH;
+      if(ball.x + ball.r > rx && ball.x - ball.r < rx+rw && ball.y + ball.r > ry && ball.y - ball.r < ry+rh){
+        b.alive = false; ball.dy *= -1; score += 10;
+      } else { remaining++; }
+  }}
+
+  if(remaining === 0){
+    showWinOverlay(); running = false;
+  }
+
+  if(ball.y - ball.r > H){ lives--; if(lives <= 0){ running=false; alert('Game over — score: '+score); } else { resetBall(); } }
+}
+
+function resetBall(){ ball.x = W/2; ball.y = H-120; ball.dx = 4*(Math.random()>0.5?1:-1); ball.dy = -4; }
+function gameLoop(){ if(!running || paused) return; updatePhysics(); draw(); requestAnimationFrame(gameLoop); }
+function startGame(){ if(!running){ running=true; resetBall(); gameLoop(); } }
+
+document.getElementById('startBtn').addEventListener('click', function(){ startGame(); });
+document.getElementById('pauseBtn').addEventListener('click', function(){ paused = !paused; document.getElementById('pauseBtn').textContent = paused ? 'Resume' : 'Pause'; if(!paused) gameLoop(); });
+document.getElementById('resetBtn').addEventListener('click', function(){ score=0; lives=3; initBricks(); resetBall(); draw(); document.getElementById('winOverlay').classList.remove('show'); });
+
+const winOverlay = document.getElementById('winOverlay');
+document.getElementById('playAgain').addEventListener('click', function(){ winOverlay.classList.remove('show'); score=0; lives=3; initBricks(); resetBall(); startGame(); });
+
+function showWinOverlay(){ winOverlay.classList.add('show'); winOverlay.setAttribute('aria-hidden','false'); }
+let loaded = 0; const totalImgs = brickImgs.length + 1;
+[ballImg].concat(brickImgs).forEach(function(img){ img.onload = function(){ loaded++; if(loaded>=totalImgs){ initBricks(); draw(); } }; img.onerror = function(){ console.error('Image failed to load:', img.src); initBricks(); draw(); }; });
+
+function fitCanvas(){ const ratio = Math.min(window.innerWidth*0.95 / W, window.innerHeight*0.85 / H); canvas.style.width = Math.floor(W*ratio) + 'px'; canvas.style.height = Math.floor(H*ratio) + 'px'; }
+window.addEventListener('resize', fitCanvas); fitCanvas();
+</script>
+</body>
+</html>
